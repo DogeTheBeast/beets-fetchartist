@@ -14,6 +14,9 @@ from beets import ui
 from beets import util as beetsutil
 
 from beetsplug import util
+from beetsplug.audiodb import ArtistImages
+from beetsplug.cache import MappingCache
+from beetsplug.partita import PartitaResolver
 
 CONTENT_TYPES = ["image/png", "image/jpeg"]
 FILE_TYPES = ['png', 'jpg']
@@ -24,30 +27,6 @@ CONTENT_TYPE_TO_EXTENSION_MAP = {
 }
 
 COVER_NAME_KEY = "filename"
-
-class ArtistImages:
-    BASE_URL = "https://www.theaudiodb.com/api/v1/json/123"
-
-    def get_artist(self, name):
-        response = requests.get(
-            f"{self.BASE_URL}/search.php",
-            params={"s": name},
-            timeout=10,
-        )
-        response.raise_for_status()
-
-        data = response.json()
-        artists = data.get("artists") or []
-
-        return artists[0] if artists else None
-
-    def get_artist_image(self, name):
-        artist = self.get_artist(name)
-
-        if not artist:
-            return None
-
-        return artist.get("strArtistThumb")
 
 class ArtistInfo(object):
     """
@@ -90,9 +69,9 @@ class FetchArtistPlugin(plugins.BeetsPlugin):
     """
     def __init__(self):
         super(FetchArtistPlugin, self).__init__()
+        self.cache = MappingCache()
         self.images = ArtistImages()
-
-        self._last_fm = pylast.LastFMNetwork(api_key=plugins.LASTFM_KEY)
+        self.partita = PartitaResolver()
 
         self.config.add({
             COVER_NAME_KEY: ""
@@ -190,7 +169,32 @@ class FetchArtistPlugin(plugins.BeetsPlugin):
         return False
 
     def _request_cover(self, artist_name):
-        url = self.images.get_artist_image(artist_name)
+        url = None
+
+        # 1. cached Partita permanent ID -> direct lookup
+        partita_id = self.cache.get(artist_name)
+        if partita_id:
+            url = self.partita.lookup_artist(partita_id)
+            if url:
+                self._log.debug("artist cover from cache for '{}'",
+                                 artist_name)
+
+        # 2. AudioDB by name
+        if not url:
+            url = self.images.get_artist_image(artist_name)
+            if url:
+                self._log.debug("artist cover from audiodb for '{}'",
+                                 artist_name)
+
+        # 3. MusicBrainz + Partita resolve, then cache the permanent ID
+        if not url:
+            url, partita_id = self.partita.get_artist_image(artist_name)
+            if url:
+                self._log.debug("artist cover from partita for '{}'",
+                                 artist_name)
+            if partita_id:
+                self.cache.put(artist_name, partita_id)
+                self.cache.save()
 
         if not url:
             return None

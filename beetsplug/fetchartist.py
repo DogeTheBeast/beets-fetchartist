@@ -25,6 +25,30 @@ CONTENT_TYPE_TO_EXTENSION_MAP = {
 
 COVER_NAME_KEY = "filename"
 
+class ArtistImages:
+    BASE_URL = "https://www.theaudiodb.com/api/v1/json/123"
+
+    def get_artist(self, name):
+        response = requests.get(
+            f"{self.BASE_URL}/search.php",
+            params={"s": name},
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        artists = data.get("artists") or []
+
+        return artists[0] if artists else None
+
+    def get_artist_image(self, name):
+        artist = self.get_artist(name)
+
+        if not artist:
+            return None
+
+        return artist.get("strArtistThumb")
+
 class ArtistInfo(object):
     """
     Contains information about an artist, like it's name, paths that point to
@@ -66,6 +90,7 @@ class FetchArtistPlugin(plugins.BeetsPlugin):
     """
     def __init__(self):
         super(FetchArtistPlugin, self).__init__()
+        self.images = ArtistImages()
 
         self._last_fm = pylast.LastFMNetwork(api_key=plugins.LASTFM_KEY)
 
@@ -165,41 +190,24 @@ class FetchArtistPlugin(plugins.BeetsPlugin):
         return False
 
     def _request_cover(self, artist_name):
-        artist = self._last_fm.get_artist(artist_name)
-        url = artist.get_url()
+        url = self.images.get_artist_image(artist_name)
 
         if not url:
             return None
 
-        headers = {"Accept-Language": "en-US, en;q=0.5"}
-        results = requests.get(url, headers=headers)
-
-        # cover art endpoint was removed so this parses the html
-        soup = BeautifulSoup(results.text, "html.parser")
-
-        # artist image will show up in this element
-        search = soup.find_all('div', class_='header-new-background-image')
-        if not search:
-            return None
-
-        # image is set as the background url
-        image = search[0]['style']
-
-        # strip url from style
-        cover = re.search('\(([^)]+)', image).group(1)
-
-        # this is a custom value that improves the image quality
-        cover = cover.replace('/ar0/', '/770x0/')
-        cover = cover.replace('.jpg', '.png')
-        response = requests.get(cover, stream=True)
+        response = requests.get(url, stream=True, timeout=10)
 
         content_type = response.headers.get('Content-Type')
         if content_type is None or content_type not in CONTENT_TYPES:
-            self._log.debug(u"not a supported image: {}", content_type or 'no content type')
+            self._log.debug(
+                u"not a supported image: {}",
+                content_type or 'no content type'
+            )
             return None
 
         extension = CONTENT_TYPE_TO_EXTENSION_MAP[content_type]
         return (response, extension)
+
 
     def _fetch_cover(self, artist_info):
         result = self._request_cover(artist_info.name)
